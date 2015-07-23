@@ -8,6 +8,11 @@
 #ifndef MAIN_H_
 #define MAIN_H_
 #include<sch.h>
+int d_counter_bursts;
+int consume_each(gr_complex *in,int to_consume);
+FILE *dump_direct,*dump_processed;
+void dump_complex(gr_complex * in,int len,int flag);
+int ctr;
 void gsm_decode(gr_complex* input,int noutput_items);
         /** Function whis is used to search a FCCH burst and to compute frequency offset before
         * "synchronized" state of the receiver
@@ -41,7 +46,7 @@ void gsm_decode(gr_complex* input,int noutput_items);
          * @param nitems number of samples in the gsm_receiver's buffer
          * @return true if SCH burst is near, false otherwise
          */
-        bool reach_sch_burst(const int nitems);
+        bool reach_sch_burst(gr_complex *in ,const int nitems);
 
         /** Extracts channel impulse response from a SCH burst and computes first sample number of this burst
          *
@@ -114,7 +119,7 @@ void gsm_decode(gr_complex* input,int noutput_items);
          * @param burst_binary - content of the burst
          * @b_type - type of the burst
          */
-        void send_burst(burst_counter burst_nr, const unsigned char * burst_binary, uint8_t burst_type, unsigned int input_nr);
+        void send_burst(burst_counter burst_nr, const unsigned char * burst_binary);
 
         /**
          * Configures burst types in different channels

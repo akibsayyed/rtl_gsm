@@ -48,6 +48,8 @@ static rtlsdr_dev_t *dev = NULL;
 #define SYNC_SEARCH_RANGE 30
 int PPM=0;
 
+int samples_len=0;
+
 states d_state=fcch_search;
 using namespace std;
 void usage(void)
@@ -218,11 +220,42 @@ gr_complex out[ny_alloc];
     // here "y" is signal with sample rate of OUT_SAMPLERATE and "ny" shows how many samples are in "y"
 //}
     int i=0;
+    int first=0;
+    //dump_complex(out,ny,1);
 
-    for (i=	7579;i<=ny;){
-    	gsm_decode(out,i);
-    	i=i+7579;
+
+    if (d_state==synchronized){
+ sync:   	 for (;i<=ny;){
+    			  //d_counter=0;
+    			    //dump_complex(out,70000,0);
+    		    	gsm_decode(out,70000);
+
+    		    	//consume_each(out,i)
+    		    	//if(ctr>4)
+    		    	//	exit(1);
+    		    	i=i+625;
+    		    	//ctr++;
+    		    }
     }
+    else{
+    	 for (i=	70000;i<=ny;){
+    			  //d_counter=0;
+    			    //dump_complex(out,70000,0);
+    		    	gsm_decode(out,70000);
+
+    		    	//consume_each(out,i)
+    		    	//if(ctr>4)
+    		    	//	exit(1);
+    		    	if (d_state==synchronized){
+    		    		goto sync;
+    		    	}
+    		    	i=i+625;
+    		    	//ctr++;
+
+    		    }
+    }
+
+
 
 msresamp_crcf_destroy(q);
 
@@ -273,16 +306,9 @@ resampler(out,len,1e6,4);
 //firfilt_crcf_destroy(q);
 
 
-void filter_csdr(){
-	//window_t window = WINDOW_DEFAULT;
-	//float* taps=(float*)malloc(sizeof(float)*50);
 
 
-
-
-}
-
-bool find_fcch_burst(const gr_complex *input, const int nitems, double & computed_freq_offset)
+bool find_fcch_burst(gr_complex *input, const int nitems, double & computed_freq_offset)
 {
     boost::circular_buffer<float> phase_diff_buffer(FCCH_HITS_NEEDED * d_OSR); //circular buffer used to scan throug signal to find
     //best match for FCCH burst
@@ -443,7 +469,9 @@ bool find_fcch_burst(const gr_complex *input, const int nitems, double & compute
 
     d_counter += to_consume;
     //consume_each(to_consume);
-
+consume_each(input,to_consume);
+samples_len=nitems-to_consume;
+    //fprintf(stdout,"\nFCCH To Consume %d",to_consume);
     return result;
 }
 
@@ -473,6 +501,7 @@ inline float compute_phase_diff(gr_complex val1, gr_complex val2)
 void gsm_decode(gr_complex* input,int noutput_items)
 {
 	init_gmsk();
+	int z=0;
 //    std::vector<const gr_complex *> iii = (std::vector<const gr_complex *>) input_items; // jak zrobić to rzutowanie poprawnie
     //gr_complex * input = (gr_complex *) input_items[0];
     //std::vector<tag_t> freq_offset_tags;
@@ -507,226 +536,251 @@ void gsm_decode(gr_complex* input,int noutput_items)
             d_freq_offset_setting = pmt::to_double(freq_offset_tag.value);
         }
     }*/
+//for (z=0;z<noutput_items;z++){
+	switch (d_state)
+	    {
+	        //bootstrapping
+	    case fcch_search:
+	    {
+	        double freq_offset_tmp;
+	        if (find_fcch_burst(input, noutput_items,freq_offset_tmp))
+	        {
+	            //pmt::pmt_t msg = pmt::make_tuple(pmt::mp("freq_offset"),pmt::from_double(freq_offset_tmp-d_freq_offset_setting),pmt::mp("fcch_search"));
+	           // message_port_pub(pmt::mp("measurements"), msg);
+	        	fprintf(stderr,"found fcch offset is %f\n",freq_offset_tmp);
+	            d_state = sch_search;
+	        }
+	        else
+	        {
+	            d_state = fcch_search;
+	        }
+	        break;
+	    }
 
-    switch (d_state)
-    {
-        //bootstrapping
-    case fcch_search:
-    {
-        double freq_offset_tmp;
-        if (find_fcch_burst(input, noutput_items,freq_offset_tmp))
-        {
-            //pmt::pmt_t msg = pmt::make_tuple(pmt::mp("freq_offset"),pmt::from_double(freq_offset_tmp-d_freq_offset_setting),pmt::mp("fcch_search"));
-           // message_port_pub(pmt::mp("measurements"), msg);
-        	fprintf(stderr,"found fcch offset is %f\n",freq_offset_tmp);
-            d_state = sch_search;
-        }
-        else
-        {
-            d_state = fcch_search;
-        }
-        break;
-    }
+	    case sch_search:
+	    {
+	    	//fprintf(stderr,"found sch\n");
+	        std::vector<gr_complex> channel_imp_resp(CHAN_IMP_RESP_LENGTH*d_OSR);
+	        int t1, t2, t3;
+	        int burst_start = 0;
+	        unsigned char output_binary[BURST_SIZE];
 
-    case sch_search:
-    {
-    	//fprintf(stderr,"found sch\n");
-        std::vector<gr_complex> channel_imp_resp(CHAN_IMP_RESP_LENGTH*d_OSR);
-        int t1, t2, t3;
-        int burst_start = 0;
-        unsigned char output_binary[BURST_SIZE];
+	        if (reach_sch_burst(input,noutput_items))                                //wait for a SCH burst
+	        {
+	        	//fprintf(stderr,"inside sch search\n");
+	            burst_start = get_sch_chan_imp_resp(input, &channel_imp_resp[0]); //get channel impulse response from it
+	            detect_burst(input, &channel_imp_resp[0], burst_start, output_binary); //detect bits using MLSE detection
+	            if (decode_sch(&output_binary[3], &t1, &t2, &t3, &d_ncc, &d_bcc) == 0)   //decode SCH burst
+	            {
+	                d_burst_nr.set(t1, t2, t3, 0);                                  //set counter of bursts value
+	                d_burst_nr++;
 
-        if (reach_sch_burst(noutput_items))                                //wait for a SCH burst
-        {
-        	//fprintf(stderr,"inside sch search\n");
-            burst_start = get_sch_chan_imp_resp(input, &channel_imp_resp[0]); //get channel impulse response from it
-            detect_burst(input, &channel_imp_resp[0], burst_start, output_binary); //detect bits using MLSE detection
-            if (decode_sch(&output_binary[3], &t1, &t2, &t3, &d_ncc, &d_bcc) == 0)   //decode SCH burst
-            {
-                d_burst_nr.set(t1, t2, t3, 0);                                  //set counter of bursts value
-                d_burst_nr++;
+	                consume_each(input,burst_start + BURST_SIZE * d_OSR + 4*d_OSR);   //consume samples up to next guard period
+	                d_state = synchronized;
+	                fprintf(stderr,"synchronized\n");
+	            }
+	            else
+	            {
+	                d_state = fcch_search;                       //if there is error in the sch burst go back to fcch search phase
+	            }
+	        }
+	        else
+	        {
+	            d_state = sch_search;
+	        }
+	        break;
+	    }
+	    //in this state receiver is synchronized and it processes bursts according to burst type for given burst number
+	    case synchronized:
+	    {
+	    	///fprintf(dump_processed,"=========================");
+	    	//dump_complex(input,70000,0);
+	    	//ctr++;
+	    	//if (ctr>2)
+	    	//	exit(1);
+	        std::vector<gr_complex> channel_imp_resp(CHAN_IMP_RESP_LENGTH*d_OSR);
+	        int offset = 0;
+	        int to_consume = 0;
+	        unsigned char output_binary[BURST_SIZE];
 
-                //consume_each(burst_start + BURST_SIZE * d_OSR + 4*d_OSR);   //consume samples up to next guard period
-                d_state = synchronized;
-                fprintf(stderr,"synchronized\n");
-            }
-            else
-            {
-                d_state = fcch_search;                       //if there is error in the sch burst go back to fcch search phase
-            }
-        }
-        else
-        {
-            d_state = sch_search;
-        }
-        break;
-    }
-    //in this state receiver is synchronized and it processes bursts according to burst type for given burst number
-    case synchronized:
-    {
-        std::vector<gr_complex> channel_imp_resp(CHAN_IMP_RESP_LENGTH*d_OSR);
-        int offset = 0;
-        int to_consume = 0;
-        unsigned char output_binary[BURST_SIZE];
+	        burst_type b_type;
 
-        burst_type b_type;
+	        for(int input_nr=0; input_nr<1; input_nr++)
+	        {
+	            double signal_pwr = 0;
+	            //input = (gr_complex *)input_items[input_nr];
 
-        for(int input_nr=0; input_nr<1; input_nr++)
-        {
-            double signal_pwr = 0;
-            //input = (gr_complex *)input_items[input_nr];
+	            for(int ii=GUARD_PERIOD;ii<TS_BITS;ii++)
+	            {
+	                signal_pwr += abs(input[ii])*abs(input[ii]);
+	            }
+	            signal_pwr = signal_pwr/(TS_BITS);
+	            d_signal_dbm = round(10*log10(signal_pwr/50));
+	            if(input_nr==0){
+	                d_c0_signal_dbm = d_signal_dbm;
+	            }
 
-            for(int ii=GUARD_PERIOD;ii<TS_BITS;ii++)
-            {
-                signal_pwr += abs(input[ii])*abs(input[ii]);
-            }
-            signal_pwr = signal_pwr/(TS_BITS);
-            d_signal_dbm = round(10*log10(signal_pwr/50));
-            if(input_nr==0){
-                d_c0_signal_dbm = d_signal_dbm;
-            }
+	            if(input_nr==0) //for c0 channel burst type is controlled by channel configuration
+	            {
+	                b_type = d_channel_conf.get_burst_type(d_burst_nr); //get burst type for given burst number
+	            }
+	            else
+	            {
+	                b_type = normal_or_noise; //for the rest it can be only normal burst or noise (at least at this moment of development)
+	            }
 
-            if(input_nr==0) //for c0 channel burst type is controlled by channel configuration
-            {
-                b_type = d_channel_conf.get_burst_type(d_burst_nr); //get burst type for given burst number
-            }
-            else
-            {
-                b_type = normal_or_noise; //for the rest it can be only normal burst or noise (at least at this moment of development)
-            }
+	            switch (b_type)
+	            {
+	            case fcch_burst:                                                                      //if it's FCCH  burst
+	            {
+	            	fprintf(stderr,"\nfcch_burst!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+	            	d_counter_bursts++;
+	                const unsigned first_sample = ceil((GUARD_PERIOD + 2 * TAIL_BITS) * d_OSR) + 1;
+	                const unsigned last_sample = first_sample + USEFUL_BITS * d_OSR - TAIL_BITS * d_OSR;
+	                double freq_offset_tmp = compute_freq_offset(input, first_sample, last_sample);       //extract frequency offset from it
 
-            switch (b_type)
-            {
-            case fcch_burst:                                                                      //if it's FCCH  burst
-            {
-                const unsigned first_sample = ceil((GUARD_PERIOD + 2 * TAIL_BITS) * d_OSR) + 1;
-                const unsigned last_sample = first_sample + USEFUL_BITS * d_OSR - TAIL_BITS * d_OSR;
-                double freq_offset_tmp = compute_freq_offset(input, first_sample, last_sample);       //extract frequency offset from it
+	                //send_burst(d_burst_nr, fc_fb, GSMTAP_BURST_FCCH, input_nr);
 
-                //send_burst(d_burst_nr, fc_fb, GSMTAP_BURST_FCCH, input_nr);
+	                //pmt::pmt_t msg = pmt::make_tuple(pmt::mp("freq_offset"),pmt::from_double(freq_offset_tmp-d_freq_offset_setting),pmt::mp("synchronized"));
+	                //message_port_pub(pmt::mp("measurements"), msg);
+	                break;
+	            }
+	            case sch_burst:                                                                      //if it's SCH burst
+	            {	d_counter_bursts++;
+	            fprintf(stderr,"\nsch_burst!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+	                int t1, t2, t3, d_ncc, d_bcc;
+	                d_c0_burst_start = get_sch_chan_imp_resp(input, &channel_imp_resp[0]);                //get channel impulse response
 
-                //pmt::pmt_t msg = pmt::make_tuple(pmt::mp("freq_offset"),pmt::from_double(freq_offset_tmp-d_freq_offset_setting),pmt::mp("synchronized"));
-                //message_port_pub(pmt::mp("measurements"), msg);
-                break;
-            }
-            case sch_burst:                                                                      //if it's SCH burst
-            {
-                int t1, t2, t3, d_ncc, d_bcc;
-                d_c0_burst_start = get_sch_chan_imp_resp(input, &channel_imp_resp[0]);                //get channel impulse response
+	                detect_burst(input, &channel_imp_resp[0], d_c0_burst_start, output_binary);           //MLSE detection of bits
+	                //send_burst(d_burst_nr, output_binary, GSMTAP_BURST_SCH, input_nr);
+	                if (decode_sch(&output_binary[3], &t1, &t2, &t3, &d_ncc, &d_bcc) == 0)           //and decode SCH data
+	                {
+	                    // d_burst_nr.set(t1, t2, t3, 0);                                              //but only to check if burst_start value is correct
+	                    d_failed_sch = 0;
+	                    offset =  d_c0_burst_start - floor((GUARD_PERIOD) * d_OSR);                         //compute offset from burst_start - burst should start after a guard period
+	                    to_consume += offset;                                                          //adjust with offset number of samples to be consumed
+	                }
+	                else
+	                {
+	                    d_failed_sch++;
+	                    if (d_failed_sch >= MAX_SCH_ERRORS)
+	                    {
+	                        d_state = fcch_search;
+	                        //pmt::pmt_t msg = pmt::make_tuple(pmt::mp("freq_offset"),pmt::from_double(0.0),pmt::mp("sync_loss"));
+	                        //message_port_pub(pmt::mp("measurements"), msg);
+	                        fprintf(stderr,"Re-Synchronization!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+	                    }
+	                }
+	                break;
+	            }
+	            case normal_burst:
+	            {
+	            	d_counter_bursts++;
+	            	fprintf(stderr,"\nNormal burst!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+	                float normal_corr_max;                                                    //if it's normal burst
+	                d_c0_burst_start = get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, d_bcc); //get channel impulse response for given training sequence number - d_bcc
+	                detect_burst(input, &channel_imp_resp[0], d_c0_burst_start, output_binary);            //MLSE detection of bits
+	                //send_burst(d_burst_nr, output_binary, GSMTAP_BURST_NORMAL, input_nr);
+	                break;
+	            }
+	            case dummy_or_normal:
+	            {
+	            	d_counter_bursts++;
+	            	fprintf(stderr,"\nDummy or Normal burst!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+	                unsigned int normal_burst_start, dummy_burst_start;
+	                float dummy_corr_max, normal_corr_max;
 
-                detect_burst(input, &channel_imp_resp[0], d_c0_burst_start, output_binary);           //MLSE detection of bits
-                //send_burst(d_burst_nr, output_binary, GSMTAP_BURST_SCH, input_nr);
-                if (decode_sch(&output_binary[3], &t1, &t2, &t3, &d_ncc, &d_bcc) == 0)           //and decode SCH data
-                {
-                    // d_burst_nr.set(t1, t2, t3, 0);                                              //but only to check if burst_start value is correct
-                    d_failed_sch = 0;
-                    offset =  d_c0_burst_start - floor((GUARD_PERIOD) * d_OSR);                         //compute offset from burst_start - burst should start after a guard period
-                    to_consume += offset;                                                          //adjust with offset number of samples to be consumed
-                }
-                else
-                {
-                    d_failed_sch++;
-                    if (d_failed_sch >= MAX_SCH_ERRORS)
-                    {
-                        d_state = fcch_search;
-                        //pmt::pmt_t msg = pmt::make_tuple(pmt::mp("freq_offset"),pmt::from_double(0.0),pmt::mp("sync_loss"));
-                        //message_port_pub(pmt::mp("measurements"), msg);
-                        //DCOUT("Re-Synchronization!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-                    }
-                }
-                break;
-            }
-            case normal_burst:
-            {
-                float normal_corr_max;                                                    //if it's normal burst
-                d_c0_burst_start = get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, d_bcc); //get channel impulse response for given training sequence number - d_bcc
-                detect_burst(input, &channel_imp_resp[0], d_c0_burst_start, output_binary);            //MLSE detection of bits
-                //send_burst(d_burst_nr, output_binary, GSMTAP_BURST_NORMAL, input_nr);
-                break;
-            }
-            case dummy_or_normal:
-            {
-                unsigned int normal_burst_start, dummy_burst_start;
-                float dummy_corr_max, normal_corr_max;
+	                dummy_burst_start = get_norm_chan_imp_resp(input, &channel_imp_resp[0], &dummy_corr_max, TS_DUMMY);
+	                normal_burst_start = get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, d_bcc);
 
-                dummy_burst_start = get_norm_chan_imp_resp(input, &channel_imp_resp[0], &dummy_corr_max, TS_DUMMY);
-                normal_burst_start = get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, d_bcc);
+	                if (normal_corr_max > dummy_corr_max)
+	                {
+	                    d_c0_burst_start = normal_burst_start;
+	                    detect_burst(input, &channel_imp_resp[0], normal_burst_start, output_binary);
+	                    send_burst(d_burst_nr, output_binary);
+	                }
+	                else
+	                {
+	                    d_c0_burst_start = dummy_burst_start;
+	                    send_burst(d_burst_nr, dummy_burst);
+	                }
+	                break;
+	            }
+	            case rach_burst:
+	                break;
+	            case dummy:
+	            	d_counter_bursts++;
+	                //send_burst(d_burst_nr, dummy_burst, GSMTAP_BURST_DUMMY, input_nr);
+	                break;
+	            case normal_or_noise:
+	            {
+	            	d_counter_bursts++;
+	            	fprintf(stderr,"\n Noise or Normal burst!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+	                unsigned int burst_start;
+	                float normal_corr_max_tmp;
+	                float normal_corr_max=-1e6;
+	                int max_tn;
+	                //std::vector<gr_complex> v(input, input + noutput_items);
+	                if(d_signal_dbm>=d_c0_signal_dbm-13)
+	                {
+	                    if(d_tseq_nums.size()==0)              //there is no information about training sequence
+	                    {                                      //however the receiver can detect it
+	                        get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, 0);
+	                        float ts_max=normal_corr_max;     //with use of a very simple algorithm based on finding
+	                        int ts_max_num=0;                 //maximum correlation
+	                        for(int ss=1; ss<=7; ss++)
+	                        {
+	                            get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, ss);
+	                            if(ts_max<normal_corr_max)
+	                            {
+	                                ts_max = normal_corr_max;
+	                                ts_max_num = ss;
+	                            }
+	                        }
+	                        d_tseq_nums.push_back(ts_max_num);
+	                    }
+	                    int tseq_num;
+	                    if(input_nr<=d_tseq_nums.size()){
+	                        tseq_num = d_tseq_nums[input_nr-1];
+	                    } else {
+	                        tseq_num = d_tseq_nums.back();
+	                    }
+	                    burst_start = get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, tseq_num);
+	//                  if(abs(d_c0_burst_start-burst_start)<=2){ //unused check/filter based on timing
+	                    if((normal_corr_max/sqrt(signal_pwr))>=0.9){
+	                        detect_burst(input, &channel_imp_resp[0], burst_start, output_binary);
+	                        //send_burst(d_burst_nr, output_binary, GSMTAP_BURST_NORMAL, input_nr);
+	                    }
+	                }
+	                break;
+	            }
+	            case empty:   //if it's empty burst
+	                break;      //do nothing
+	            }
 
-                if (normal_corr_max > dummy_corr_max)
-                {
-                    d_c0_burst_start = normal_burst_start;
-                    detect_burst(input, &channel_imp_resp[0], normal_burst_start, output_binary);
-                    //send_burst(d_burst_nr, output_binary, GSMTAP_BURST_NORMAL, input_nr);
-                }
-                else
-                {
-                    d_c0_burst_start = dummy_burst_start;
-                    //send_burst(d_burst_nr, dummy_burst, GSMTAP_BURST_DUMMY, input_nr);
-                }
-                break;
-            }
-            case rach_burst:
-                break;
-            case dummy:
-                //send_burst(d_burst_nr, dummy_burst, GSMTAP_BURST_DUMMY, input_nr);
-                break;
-            case normal_or_noise:
-            {
-                unsigned int burst_start;
-                float normal_corr_max_tmp;
-                float normal_corr_max=-1e6;
-                int max_tn;
-                //std::vector<gr_complex> v(input, input + noutput_items);
-                if(d_signal_dbm>=d_c0_signal_dbm-13)
-                {
-                    if(d_tseq_nums.size()==0)              //there is no information about training sequence
-                    {                                      //however the receiver can detect it
-                        get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, 0);
-                        float ts_max=normal_corr_max;     //with use of a very simple algorithm based on finding
-                        int ts_max_num=0;                 //maximum correlation
-                        for(int ss=1; ss<=7; ss++)
-                        {
-                            get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, ss);
-                            if(ts_max<normal_corr_max)
-                            {
-                                ts_max = normal_corr_max;
-                                ts_max_num = ss;
-                            }
-                        }
-                        d_tseq_nums.push_back(ts_max_num);
-                    }
-                    int tseq_num;
-                    if(input_nr<=d_tseq_nums.size()){
-                        tseq_num = d_tseq_nums[input_nr-1];
-                    } else {
-                        tseq_num = d_tseq_nums.back();
-                    }
-                    burst_start = get_norm_chan_imp_resp(input, &channel_imp_resp[0], &normal_corr_max, tseq_num);
-//                  if(abs(d_c0_burst_start-burst_start)<=2){ //unused check/filter based on timing
-                    if((normal_corr_max/sqrt(signal_pwr))>=0.9){
-                        detect_burst(input, &channel_imp_resp[0], burst_start, output_binary);
-                        //send_burst(d_burst_nr, output_binary, GSMTAP_BURST_NORMAL, input_nr);
-                    }
-                }
-                break;
-            }
-            case empty:   //if it's empty burst
-                break;      //do nothing
-            }
+	          //  if(input_nr==input_items.size()-1)
+	          // {
+	                d_burst_nr++;   //go to next burst
+	                to_consume += TS_BITS * d_OSR + d_burst_nr.get_offset();  //consume samples of the burst up to next guard period
+	                fprintf(stderr,"\nto consume in sync-%d---%d",to_consume,d_burst_nr.get_offset());
+	                consume_each(input,to_consume);
+	          //  }
+	            //and add offset which is introduced by
+	            //0.25 fractional part of a guard period
+	        }
+	    }
+	    break;
+	    }
+//}
 
-            //if(input_nr==input_items.size()-1)
-           // {
-                d_burst_nr++;   //go to next burst
-                //to_consume += TS_BITS * d_OSR + d_burst_nr.get_offset();  //consume samples of the burst up to next guard period
-                //consume_each(to_consume);
-           // }
-            //and add offset which is introduced by
-            //0.25 fractional part of a guard period
-        }
-    }
-    break;
-    }
     //return 0;
+}
+
+void send_burst(burst_counter burst_nr, const unsigned char * burst_binary){
+	fprintf(stdout,"\nframe-nr= %x",d_burst_nr.get_frame_nr());
+	for(int i=0;i<BURST_SIZE;i++){
+		fprintf(stdout,"%x",burst_binary[i]);
+	}
 }
 //computes autocorrelation for positive arguments
 inline void autocorrelation(const gr_complex * input, gr_complex * out, int nitems)
@@ -783,10 +837,10 @@ void detect_burst(const gr_complex * input, gr_complex * chan_imp_resp, int burs
 
     viterbi_detector(filtered_burst, BURST_SIZE, rhh, start_state, stop_states, 2, output);
 
-    fprintf(stdout,"\n");
+    //fprintf(stdout,"\n");
     for (int i = 0; i < BURST_SIZE ; i++)
     {
-    	fprintf(stdout,"%x",(output[i] > 0));
+    	//fprintf(stdout,"%x",(output[i] > 0));
         output_binary[i] = (output[i] > 0);
     }
 }
@@ -868,7 +922,7 @@ int get_sch_chan_imp_resp(const gr_complex *input, gr_complex * chan_imp_resp)
     return burst_start;
 }
 
-bool reach_sch_burst(const int nitems)
+bool reach_sch_burst(gr_complex *in,const int nitems)
 {
     //it just consumes samples to get near to a SCH burst
     int to_consume = 0;
@@ -893,10 +947,21 @@ bool reach_sch_burst(const int nitems)
         to_consume = 0;
         result = true;
     }
-
+fprintf(stdout,"\nTo Consume %d",to_consume);
     d_counter += to_consume;
-    //consume_each(to_consume);
+    samples_len=nitems-to_consume;
+    consume_each(in,to_consume);
     return result;
+}
+int consume_each(gr_complex *in,int to_consume){
+int i;
+int counter=to_consume;
+for (i=0;i<DEFAULT_BUF_LENGTH/2;i++){
+	in[i]=in[counter];
+	counter++;
+}
+return to_consume;
+
 }
 
 
@@ -1149,6 +1214,31 @@ void pass_samples(unsigned char * buf,uint32_t len)
 
 
 }
+
+void dump_complex(gr_complex * in,int len,int flag)
+{
+	int i;float re,im;
+	if (flag==1){
+
+		for (i=0;i<len;i++){
+			re=in[i].real();
+			im=in[i].imag();
+			fprintf(dump_direct,"\n");
+			fprintf(dump_direct,"%f---%f",re,im);
+		}
+	}
+	else{
+
+		for (i=0;i<len;i++){
+			re=in[i].real();
+			im=in[i].imag();
+			fprintf(dump_processed,"\n");
+			fprintf(dump_processed,"%f---%f",re,im);
+		}
+	}
+
+
+}
 int main(int argc, char **argv)
 {
 
@@ -1159,6 +1249,8 @@ typedef std::complex<double>			gr_complexd;
 	struct sigaction sigact;
 #endif
 	char *filename = NULL;
+	dump_direct=fopen("dump_direct","w");
+	dump_processed=fopen("dump_processed","w");
 	int n_read;
 	int y = 0;
 	int r, opt;
@@ -1388,6 +1480,8 @@ float re,im;
 				}
 
 				//fwrite(out,sizeof(gr_complex),n_read/2,file);
+				//consume_each(out,12);
+				fprintf(stderr,"\nSending Samples");
 				filter( out,n_read/2);
 
 
@@ -1422,6 +1516,7 @@ float re,im;
 		rtlsdr_close(dev);
 	}
 
+	fprintf(stderr,"\nBurst Counter %d",d_counter_bursts);
 	free (buffer);
 out1:
 	return r >= 0 ? r : -r;
