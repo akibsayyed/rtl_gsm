@@ -49,6 +49,7 @@ static rtlsdr_dev_t *dev = NULL;
 int PPM=0;
 
 int samples_len=0;
+int total_burst = 0x00;
 
 states d_state=fcch_search;
 using namespace std;
@@ -228,20 +229,20 @@ gr_complex out[ny_alloc];
  sync:   	 for (;i<=ny;){
     			  //d_counter=0;
     			    //dump_complex(out,70000,0);
-    		    	gsm_decode(out,70000);
+    		    	gsm_decode(out+i,ny-i);
 
     		    	//consume_each(out,i)
     		    	//if(ctr>4)
     		    	//	exit(1);
-    		    	i=i+625;
+    		    	i=total_burst;
     		    	//ctr++;
     		    }
     }
     else{
-    	 for (i=	70000;i<=ny;){
+    	 for (i=	0x00;i<=ny;){
     			  //d_counter=0;
     			    //dump_complex(out,70000,0);
-    		    	gsm_decode(out,70000);
+    		    	gsm_decode(out+i,ny-i);
 
     		    	//consume_each(out,i)
     		    	//if(ctr>4)
@@ -249,7 +250,7 @@ gr_complex out[ny_alloc];
     		    	if (d_state==synchronized){
     		    		goto sync;
     		    	}
-    		    	i=i+625;
+    		    	i=total_burst;
     		    	//ctr++;
 
     		    }
@@ -469,7 +470,8 @@ bool find_fcch_burst(gr_complex *input, const int nitems, double & computed_freq
 
     d_counter += to_consume;
     //consume_each(to_consume);
-consume_each(input,to_consume);
+//consume_each(input,to_consume);
+total_burst+=to_consume;	
 samples_len=nitems-to_consume;
     //fprintf(stdout,"\nFCCH To Consume %d",to_consume);
     return result;
@@ -575,7 +577,8 @@ void gsm_decode(gr_complex* input,int noutput_items)
 	                d_burst_nr.set(t1, t2, t3, 0);                                  //set counter of bursts value
 	                d_burst_nr++;
 
-	                consume_each(input,burst_start + BURST_SIZE * d_OSR + 4*d_OSR);   //consume samples up to next guard period
+	                //consume_each(input,burst_start + BURST_SIZE * d_OSR + 4*d_OSR);   //consume samples up to next guard period
+			total_burst+= burst_start + BURST_SIZE * d_OSR + 4*d_OSR;   
 	                d_state = synchronized;
 	                fprintf(stderr,"synchronized\n");
 	            }
@@ -764,6 +767,7 @@ void gsm_decode(gr_complex* input,int noutput_items)
 	                to_consume += TS_BITS * d_OSR + d_burst_nr.get_offset();  //consume samples of the burst up to next guard period
 	                fprintf(stderr,"\nto consume in sync-%d---%d",to_consume,d_burst_nr.get_offset());
 	                consume_each(input,to_consume);
+			total_burst+=to_consume;
 	          //  }
 	            //and add offset which is introduced by
 	            //0.25 fractional part of a guard period
@@ -950,7 +954,8 @@ bool reach_sch_burst(gr_complex *in,const int nitems)
 fprintf(stdout,"\nTo Consume %d",to_consume);
     d_counter += to_consume;
     samples_len=nitems-to_consume;
-    consume_each(in,to_consume);
+    //consume_each(in,to_consume);
+    total_burst+=to_consume;	
     return result;
 }
 int consume_each(gr_complex *in,int to_consume){
